@@ -307,10 +307,50 @@ impl<'a> CmdLineRunner<'a> {
             let _write_lock = RAW_LOCK.write().unwrap();
             return self.execute_raw();
         }
-        let mut cp = self
-            .cmd
-            .spawn()
-            .wrap_err_with(|| format!("failed to execute command: {self}"))?;
+        // let mut cp = self
+        //     .cmd
+        //     .spawn()
+        //     .wrap_err_with(|| format!("failed to execute command: {self}"))?;
+        let mut cp = match self.cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                #[cfg(target_os = "windows")]
+                {
+                    use std::process::Command;
+                    use std::path::PathBuf;
+
+                    if let Some(program) = self.cmd.get_program().to_str() {
+                        let mut bat_path = PathBuf::from(program);
+                        bat_path.set_extension("bat");
+
+                        let mut new_cmd = Command::new("cmd");
+                        new_cmd.arg("/C").arg(bat_path);
+
+                        new_cmd.args(self.cmd.get_args()); // 引数を追加
+                        new_cmd.stdout(std::process::Stdio::piped());
+                        new_cmd.stderr(std::process::Stdio::piped());
+
+                        if self.stdin.is_some() {
+                            new_cmd.stdin(std::process::Stdio::piped());
+                        }
+
+                        self.cmd = new_cmd;
+
+                        self.cmd.spawn().map_err(|e2| {
+                            eyre::eyre!(
+                        "failed to execute command: {self}\noriginal error: {e}\n.bat fallback error: {e2}"
+                    )
+                        })?
+                    } else {
+                        return Err(e).wrap_err_with(|| format!("failed to execute command: {self}"));
+                    }
+                }
+                #[cfg(not(target_os = "windows"))]
+                return Err(e).wrap_err_with(|| format!("failed to execute command: {self}"));
+            }
+        };
+        
+        
         let id = cp.id();
         RUNNING_PIDS.lock().unwrap().insert(id);
         trace!("Started process: {id} for {}", self.get_program());
